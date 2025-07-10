@@ -1,0 +1,437 @@
+﻿@page "/"
+@rendermode InteractiveServer
+@using BlazorFrame
+
+<PageTitle>BlazorFrame Demo - v2</PageTitle>
+
+<div class="container-fluid py-4">
+    <div class="row">
+        <div class="col-12">
+            <h1 class="display-4 mb-4">🖼️ BlazorFrame Component Demo v1.5.0</h1>
+            <p class="lead">
+                Comprehensive testing environment for BlazorFrame featuring security validation,
+                auto-resize, cross-frame messaging, and <strong>Content Security Policy (CSP)</strong> integration.
+            </p>
+        </div>
+    </div>
+
+    <!-- Control Panel -->
+    <div class="row mb-4">
+        <div class="col-12">
+            <div class="card border-primary">
+                <div class="card-header bg-primary text-white">
+                    <h5 class="mb-0">🎛️ Control Panel</h5>
+                </div>
+                <div class="card-body">
+                    <div class="row g-3">
+                        <div class="col-md-4">
+                            <label class="form-label">Test URL:</label>
+                            <select class="form-select" @onchange="OnUrlChange">
+                                <option value="https://httpbin.org/html">HTTPBin HTML Test</option>
+                                <option value="https://www.example.com">Example.com</option>
+                                <option value="https://jsonplaceholder.typicode.com/">JSON Placeholder</option>
+                                <option value="data:text/html,<h1>Data URL Test</h1><p>This is a data URL iframe.</p><script>setTimeout(() => window.parent.postMessage({type: 'test', data: 'Hello from data URL!'}, '*'), 1000);</script>">Data URL</option>
+                                <option value="https://codepen.io/pen/debug/abcdef">CodePen (Cross-Origin Test)</option>
+                            </select>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">Security Level:</label>
+                            <select class="form-select" @onchange="OnSecurityLevelChange">
+                                <option value="strict">🔒 Strict</option>
+                                <option value="moderate">🔐 Moderate</option>
+                                <option value="relaxed">🔓 Relaxed</option>
+                            </select>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">CSP Mode:</label>
+                            <select class="form-select" @onchange="OnCspModeChange">
+                                <option value="none">❌ No CSP</option>
+                                <option value="development">🛠️ Development</option>
+                                <option value="production">🏭 Production</option>
+                                <option value="custom">⚙️ Custom</option>
+                            </select>
+                        </div>
+                        <div class="col-md-2">
+                            <div class="form-check mt-4">
+                                <input class="form-check-input" type="checkbox" @bind="enableAutoResize" id="autoResize">
+                                <label class="form-check-label" for="autoResize">
+                                    Auto-resize
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- CSP Status Panel -->
+    @if (currentCspOptions != null)
+    {
+        <div class="row mb-4">
+            <div class="col-12">
+                <div class="card border-warning">
+                    <div class="card-header bg-warning text-dark">
+                        <h5 class="mb-0">🛡️ Content Security Policy Status</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="row">
+                            <div class="col-md-6">
+                                <h6>CSP Configuration:</h6>
+                                <ul class="list-unstyled">
+                                    <li><strong>Mode:</strong> @currentCspMode</li>
+                                    <li><strong>Frame Sources:</strong> @(currentCspOptions.FrameSrc.Count) configured</li>
+                                    <li><strong>Script Sources:</strong> @(currentCspOptions.ScriptSrc.Count) configured</li>
+                                    <li><strong>Auto-derive Frame Sources:</strong> @(currentCspOptions.AutoDeriveFrameSrc ? "✅" : "❌")</li>
+                                    <li><strong>Report Only:</strong> @(currentCspOptions.ReportOnly ? "✅" : "❌")</li>
+                                </ul>
+                            </div>
+                            <div class="col-md-6">
+                                <h6>Generated CSP Header:</h6>
+                                @if (!string.IsNullOrEmpty(lastGeneratedCspHeader))
+                                {
+                                    <div class="border rounded p-2" style="max-height: 120px; overflow-y: auto;">
+                                        <small class="font-monospace">@lastGeneratedCspHeader</small>
+                                    </div>
+                                }
+                                else
+                                {
+                                    <p class="text-muted small">No CSP header generated yet</p>
+                                }
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    }
+
+    <!-- Status Panel -->
+    <div class="row mb-4">
+        <div class="col-12">
+            <div class="card border-info">
+                <div class="card-header bg-info text-white">
+                    <h5 class="mb-0">📊 Status & Events</h5>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-3">
+                            <div class="d-flex align-items-center">
+                                <span class="badge @(isLoaded ? "bg-success" : "bg-secondary") me-2">
+                                    @(isLoaded ? "✅" : "⏳")
+                                </span>
+                                <span>Iframe Status: @(isLoaded ? "Loaded" : "Loading...")</span>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="d-flex align-items-center">
+                                <span class="badge bg-primary me-2">📨</span>
+                                <span>Messages: @messageCount</span>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="d-flex align-items-center">
+                                <span class="badge @(securityViolations > 0 ? "bg-danger" : "bg-success") me-2">
+                                    @(securityViolations > 0 ? "⚠️" : "🛡️")
+                                </span>
+                                <span>Security Violations: @securityViolations</span>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="d-flex align-items-center">
+                                <span class="badge @(cspHeadersGenerated > 0 ? "bg-warning" : "bg-secondary") me-2">
+                                    @(cspHeadersGenerated > 0 ? "🛡️" : "❌")
+                                </span>
+                                <span>CSP Headers: @cspHeadersGenerated</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Demo Sections -->
+    <div class="row">
+        <!-- Basic Demo with CSP -->
+        <div class="col-lg-6 mb-4">
+            <div class="card h-100">
+                <div class="card-header bg-success text-white">
+                    <h5 class="mb-0">🟢 Basic Demo - Auto Resize + CSP</h5>
+                </div>
+                <div class="card-body p-2">
+                    <BlazorFrame Src="@currentUrl"
+                                 Width="100%"
+                                 Height="300px"
+                                 EnableAutoResize="@enableAutoResize"
+                                 EnableScroll="false"
+                                 SecurityOptions="@currentSecurityOptions"
+                                 CspOptions="@currentCspOptions"
+                                 OnLoad="HandleIframeLoad"
+                                 OnValidatedMessage="HandleValidatedMessage"
+                                 OnSecurityViolation="HandleSecurityViolation"
+                                 OnInitializationError="HandleInitializationError"
+                                 OnCspHeaderGenerated="HandleCspHeaderGenerated"
+                                 class="border rounded" />
+                </div>
+            </div>
+        </div>
+
+        <!-- Fixed Height Demo with Strict CSP -->
+        <div class="col-lg-6 mb-4">
+            <div class="card h-100">
+                <div class="card-header bg-warning text-dark">
+                    <h5 class="mb-0">🟡 Fixed Height - Strict CSP</h5>
+                </div>
+                <div class="card-body p-2">
+                    <BlazorFrame Src="@currentUrl"
+                                 Width="100%"
+                                 Height="300px"
+                                 EnableAutoResize="false"
+                                 EnableScroll="true"
+                                 SecurityOptions="@currentSecurityOptions"
+                                 CspOptions="@strictCspOptions"
+                                 OnValidatedMessage="HandleValidatedMessage"
+                                 OnSecurityViolation="HandleSecurityViolation"
+                                 OnCspHeaderGenerated="HandleStrictCspGenerated"
+                                 class="border rounded" />
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- CSP Testing Section -->
+    <div class="row mb-4">
+        <div class="col-12">
+            <div class="card border-warning">
+                <div class="card-header bg-warning text-dark">
+                    <h5 class="mb-0">🛡️ CSP Configuration Testing</h5>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-4">
+                            <h6>Development CSP:</h6>
+                            <BlazorFrame Src="https://httpbin.org/html"
+                                         Width="100%"
+                                         Height="150px"
+                                         EnableAutoResize="false"
+                                         CspOptions="@developmentCsp"
+                                         OnCspHeaderGenerated="HandleDevelopmentCspGenerated"
+                                         class="border rounded" />
+                        </div>
+                        <div class="col-md-4">
+                            <h6>Production CSP:</h6>
+                            <BlazorFrame Src="https://httpbin.org/html"
+                                         Width="100%"
+                                         Height="150px"
+                                         EnableAutoResize="false"
+                                         CspOptions="@productionCsp"
+                                         OnCspHeaderGenerated="HandleProductionCspGenerated"
+                                         class="border rounded" />
+                        </div>
+                        <div class="col-md-4">
+                            <h6>Custom CSP with Nonce:</h6>
+                            <BlazorFrame Src="https://httpbin.org/html"
+                                         Width="100%"
+                                         Height="150px"
+                                         EnableAutoResize="false"
+                                         CspOptions="@customCspWithNonce"
+                                         OnCspHeaderGenerated="HandleCustomCspGenerated"
+                                         class="border rounded" />
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Security Test Section -->
+    <div class="row mb-4">
+        <div class="col-12">
+            <div class="card border-danger">
+                <div class="card-header bg-danger text-white">
+                    <h5 class="mb-0">🔴 Security Testing - Restricted Origins + Report-Only CSP</h5>
+                </div>
+                <div class="card-body p-2">
+                    <p class="small text-muted mb-2">
+                        This iframe has restricted allowed origins and report-only CSP. Violations will be logged but not blocked.
+                    </p>
+                    <BlazorFrame Src="@currentUrl"
+                                 Width="100%"
+                                 Height="200px"
+                                 EnableAutoResize="false"
+                                 EnableScroll="true"
+                                 AllowedOrigins="@restrictedOrigins"
+                                 SecurityOptions="@strictSecurityOptions"
+                                 CspOptions="@reportOnlyCsp"
+                                 OnValidatedMessage="HandleRestrictedMessage"
+                                 OnSecurityViolation="HandleRestrictedSecurityViolation"
+                                 OnCspHeaderGenerated="HandleReportOnlyCspGenerated"
+                                 class="border rounded" />
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- CSP Validation Results -->
+    @if (cspValidationResults.Count > 0)
+    {
+        <div class="row mb-4">
+            <div class="col-12">
+                <div class="card border-info">
+                    <div class="card-header bg-info text-white">
+                        <h5 class="mb-0">🔍 CSP Validation Results</h5>
+                    </div>
+                    <div class="card-body">
+                        @foreach (var result in cspValidationResults.TakeLast(5))
+                        {
+                            <div class="alert @(result.IsValid ? "alert-success" : "alert-danger") mb-2">
+                                <strong>@result.ConfigName:</strong> @(result.IsValid ? "✅ Valid" : "❌ Issues Found")
+                                @if (result.Warnings.Any())
+                                {
+                                    <ul class="mb-1">
+                                        @foreach (var warning in result.Warnings)
+                                        {
+                                            <li><small>⚠️ @warning</small></li>
+                                        }
+                                    </ul>
+                                }
+                                @if (result.Suggestions.Any())
+                                {
+                                    <ul class="mb-0">
+                                        @foreach (var suggestion in result.Suggestions)
+                                        {
+                                            <li><small>💡 @suggestion</small></li>
+                                        }
+                                    </ul>
+                                }
+                            </div>
+                        }
+                    </div>
+                </div>
+            </div>
+        </div>
+    }
+
+    <!-- Message Testing -->
+    <div class="row mb-4">
+        <div class="col-12">
+            <div class="card border-secondary">
+                <div class="card-header bg-secondary text-white">
+                    <h5 class="mb-0">📨 Message Testing</h5>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <h6>Send Test Messages:</h6>
+                            <div class="btn-group-vertical d-grid gap-2">
+                                <button class="btn btn-outline-primary btn-sm" @onclick="SendTestMessage">
+                                    📤 Send Valid Message
+                                </button>
+                                <button class="btn btn-outline-warning btn-sm" @onclick="SendLargeMessage">
+                                    📦 Send Large Message (Test Size Limit)
+                                </button>
+                                <button class="btn btn-outline-danger btn-sm" @onclick="SendMaliciousMessage">
+                                    ⚠️ Send Malicious Message (Test Security)
+                                </button>
+                                <button class="btn btn-outline-info btn-sm" @onclick="ValidateAllCspConfigurations">
+                                    🔍 Validate All CSP Configurations
+                                </button>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <h6>Custom Message:</h6>
+                            <div class="input-group mb-3">
+                                <input type="text" class="form-control" @bind="customMessage"
+                                       placeholder="Enter JSON message" />
+                                <button class="btn btn-primary" @onclick="SendCustomMessage">Send</button>
+                            </div>
+                            <h6>CSP Testing:</h6>
+                            <div class="btn-group-vertical d-grid gap-2">
+                                <button class="btn btn-outline-warning btn-sm" @onclick="TestCspMetaTagGeneration">
+                                    🏷️ Generate CSP Meta Tags
+                                </button>
+                                <button class="btn btn-outline-info btn-sm" @onclick="TestCspJavaScriptGeneration">
+                                    📜 Generate CSP JavaScript
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Event Log -->
+    <div class="row">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0">📋 Event Log</h5>
+                    <button class="btn btn-outline-secondary btn-sm" @onclick="ClearLog">Clear Log</button>
+                </div>
+                <div class="card-body">
+                    <div class="log-container" style="height: 400px; overflow-y: auto; font-family: monospace; font-size: 0.875rem;">
+                        @if (eventLog.Count == 0)
+                        {
+                            <p class="text-muted">No events logged yet. Interact with the iframes above to see events.</p>
+                        }
+                        else
+                        {
+                            @foreach (var logEntry in eventLog.AsEnumerable().Reverse())
+                            {
+                                <div class="log-entry p-2 mb-1 rounded @GetLogEntryClass(logEntry.Type)">
+                                    <small class="text-muted">[@logEntry.Timestamp.ToString("HH:mm:ss.fff")]</small>
+                                    <strong>@logEntry.Type:</strong> @logEntry.Message
+                                    @if (!string.IsNullOrEmpty(logEntry.Details))
+                                    {
+                                        <br>
+                                        <small class="text-muted">@logEntry.Details</small>
+                                    }
+                                </div>
+                            }
+                        }
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .log-entry {
+        border-left: 4px solid #dee2e6;
+    }
+
+        .log-entry.info {
+            background-color: #d1ecf1;
+            border-left-color: #17a2b8;
+        }
+
+        .log-entry.success {
+            background-color: #d4edda;
+            border-left-color: #28a745;
+        }
+
+        .log-entry.warning {
+            background-color: #fff3cd;
+            border-left-color: #ffc107;
+        }
+
+        .log-entry.error {
+            background-color: #f8d7da;
+            border-left-color: #dc3545;
+        }
+
+        .log-entry.security {
+            background-color: #f8d7da;
+            border-left-color: #dc3545;
+            border-left-width: 6px;
+        }
+
+        .log-entry.csp {
+            background-color: #fff3cd;
+            border-left-color: #ffc107;
+            border-left-width: 6px;
+        }
+</style>
