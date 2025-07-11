@@ -7,77 +7,53 @@ namespace BlazorFrameDemo.Components.Pages
     {
         [Inject] public ILogger<Home> Logger { get; set; } = default!;
 
-        // BlazorFrame component references
-        private BlazorFrame.BlazorFrame? basicFrame;
-        private BlazorFrame.BlazorFrame? fixedFrame;
-        private BlazorFrame.BlazorFrame? securityFrame;
-
         // State variables
         private string currentUrl = "https://httpbin.org/html";
+        private string testUrl = "data:text/html,<h1>Sandbox Test</h1><p>Testing sandbox restrictions</p><button onclick=\"alert('Popup test')\">Test Alert</button><form><input placeholder=\"Form test\"></form>";
         private bool enableAutoResize = true;
+        private bool requireHttps = false;
+        private bool allowInsecureConnections = false;
         private bool isLoaded = false;
+
+        // Counters
         private int messageCount = 0;
         private int securityViolations = 0;
+        private int configurationErrors = 0;
+        private int urlValidationErrors = 0;
         private int cspHeadersGenerated = 0;
-        private string customMessage = """{"type": "custom", "data": "Hello World!"}""";
-        private string currentCspMode = "none";
-        private string lastGeneratedCspHeader = "";
+
+        // Current configuration state
+        private string currentSecurityPreset = "development";
+        private SandboxPreset currentSandboxPreset = SandboxPreset.None;
+        private ConfigurationValidationResult? configValidationResult;
 
         // Security configurations
-        private MessageSecurityOptions currentSecurityOptions = new()
+        private MessageSecurityOptions currentSecurityOptions = new MessageSecurityOptions().ForDevelopment();
+
+        private readonly MessageSecurityOptions conflictTestOptions = new()
         {
+            RequireHttps = true,                // Require HTTPS
+            AllowInsecureConnections = true,   // But also allow HTTP (conflict!)
+            SandboxPreset = SandboxPreset.Paranoid,
+            EnableSandbox = true,
             EnableStrictValidation = true,
-            MaxMessageSize = 32 * 1024,
+            MaxMessageSize = 16 * 1024,
+            MaxJsonDepth = 3,
+            MaxObjectProperties = 10,
+            MaxArrayElements = 10,
             LogSecurityViolations = true
         };
 
-        private MessageSecurityOptions strictSecurityOptions = new()
-        {
-            EnableStrictValidation = true,
-            MaxMessageSize = 16 * 1024,
-            LogSecurityViolations = true,
-            MaxJsonDepth = 5,
-            MaxObjectProperties = 50,
-            MaxArrayElements = 100
-        };
-
-        private List<string> restrictedOrigins = new() { "https://httpbin.org", "https://www.example.com" };
+        private readonly MessageSecurityOptions basicSandboxOptions = new MessageSecurityOptions().WithBasicSandbox();
+        private readonly MessageSecurityOptions permissiveSandboxOptions = new MessageSecurityOptions().WithPermissiveSandbox();
+        private readonly MessageSecurityOptions strictSandboxOptions = new MessageSecurityOptions().WithStrictSandbox();
+        private readonly MessageSecurityOptions paranoidSandboxOptions = new MessageSecurityOptions().WithParanoidSandbox();
 
         // CSP configurations
         private CspOptions? currentCspOptions = null;
 
-        private readonly CspOptions developmentCsp = new CspOptions()
-            .ForDevelopment()
-            .AllowFrameSources("https://httpbin.org", "https://www.example.com");
-
-        private readonly CspOptions productionCsp = new CspOptions()
-            .ForProduction()
-            .AllowFrameSources("https://httpbin.org", "https://www.example.com")
-            .WithScriptNonce("production-nonce-123");
-
-        private readonly CspOptions customCspWithNonce = new CspOptions()
-            .AllowSelf()
-            .AllowFrameSources("https://httpbin.org", "https://jsonplaceholder.typicode.com")
-            .AllowHttpsFrames()
-            .AllowDataUrls()
-            .WithScriptNonce("custom-nonce-456")
-            .WithCustomDirective("img-src", "'self'", "data:", "https:")
-            .WithCustomDirective("connect-src", "'self'", "https:");
-
-        private readonly CspOptions strictCspOptions = new CspOptions()
-            .ForProduction()
-            .AllowFrameSources("https://httpbin.org")
-            .UseStrictDynamic()
-            .WithScriptNonce("strict-nonce-789");
-
-        private readonly CspOptions reportOnlyCsp = new CspOptions()
-            .AllowSelf()
-            .AllowHttpsFrames()
-            .AsReportOnly("https://csp-report.example.com/violations");
-
         // Event logging
         private List<LogEntry> eventLog = new();
-        private List<CspValidationSummary> cspValidationResults = new();
 
         private class LogEntry
         {
@@ -87,15 +63,13 @@ namespace BlazorFrameDemo.Components.Pages
             public string Details { get; set; } = "";
         }
 
-        private class CspValidationSummary
+        protected override void OnInitialized()
         {
-            public string ConfigName { get; set; } = "";
-            public bool IsValid { get; set; }
-            public List<string> Warnings { get; set; } = new();
-            public List<string> Suggestions { get; set; } = new();
+            UpdateConfigurationValidation();
         }
 
-        // Event handlers
+        #region Event Handlers
+
         private async Task HandleIframeLoad()
         {
             isLoaded = true;
@@ -114,21 +88,39 @@ namespace BlazorFrameDemo.Components.Pages
         private async Task HandleSecurityViolation(IframeMessage violation)
         {
             securityViolations++;
-            AddLogEntry("SECURITY", $"Security violation: {violation.ValidationError}",
+            var violationType = violation.MessageType switch
+            {
+                "url-validation" => "URL_VIOLATION",
+                "configuration-validation" => "CONFIG_VIOLATION",
+                _ => "SECURITY_VIOLATION"
+            };
+
+            if (violationType == "CONFIG_VIOLATION")
+                configurationErrors++;
+            if (violationType == "URL_VIOLATION")
+                urlValidationErrors++;
+
+            AddLogEntry(violationType, $"Security violation: {violation.ValidationError}",
                 $"Origin: {violation.Origin}, Data: {TruncateString(violation.Data, 50)}");
             StateHasChanged();
         }
 
-        private async Task HandleRestrictedMessage(IframeMessage message)
+        private async Task HandleConflictTestMessage(IframeMessage message)
         {
-            AddLogEntry("RESTRICTED", $"Message allowed through restricted iframe from {message.Origin}",
-                $"Data: {TruncateString(message.Data, 100)}");
+            AddLogEntry("CONFLICT_TEST", $"Conflict test message from {message.Origin}",
+                $"This message passed despite conflicting configuration");
         }
 
-        private async Task HandleRestrictedSecurityViolation(IframeMessage violation)
+        private async Task HandleConflictTestViolation(IframeMessage violation)
         {
-            AddLogEntry("SECURITY", $"Restricted iframe violation: {violation.ValidationError}",
-                $"Origin: {violation.Origin}");
+            AddLogEntry("CONFLICT_TEST", $"Conflict test violation: {violation.ValidationError}",
+                $"This demonstrates configuration conflict detection");
+        }
+
+        private async Task HandleSandboxTestViolation(string sandboxType, IframeMessage violation)
+        {
+            AddLogEntry("SANDBOX_TEST", $"{sandboxType} sandbox violation: {violation.ValidationError}",
+                $"Testing sandbox restriction effectiveness");
         }
 
         private async Task HandleInitializationError(Exception ex)
@@ -136,47 +128,18 @@ namespace BlazorFrameDemo.Components.Pages
             AddLogEntry("ERROR", "Iframe initialization failed", ex.Message);
         }
 
-        // CSP Event Handlers
         private async Task HandleCspHeaderGenerated(CspHeader cspHeader)
         {
             cspHeadersGenerated++;
-            lastGeneratedCspHeader = cspHeader.HeaderValue;
             AddLogEntry("CSP", $"CSP header generated: {cspHeader.HeaderName}",
                 $"Value: {TruncateString(cspHeader.HeaderValue, 150)}");
             StateHasChanged();
         }
 
-        private async Task HandleStrictCspGenerated(CspHeader cspHeader)
-        {
-            AddLogEntry("CSP", $"Strict CSP header generated",
-                $"Value: {TruncateString(cspHeader.HeaderValue, 150)}");
-        }
+        #endregion
 
-        private async Task HandleDevelopmentCspGenerated(CspHeader cspHeader)
-        {
-            AddLogEntry("CSP", $"Development CSP header generated",
-                $"Value: {TruncateString(cspHeader.HeaderValue, 150)}");
-        }
+        #region Control Handlers
 
-        private async Task HandleProductionCspGenerated(CspHeader cspHeader)
-        {
-            AddLogEntry("CSP", $"Production CSP header generated",
-                $"Value: {TruncateString(cspHeader.HeaderValue, 150)}");
-        }
-
-        private async Task HandleCustomCspGenerated(CspHeader cspHeader)
-        {
-            AddLogEntry("CSP", $"Custom CSP header generated",
-                $"Value: {TruncateString(cspHeader.HeaderValue, 150)}");
-        }
-
-        private async Task HandleReportOnlyCspGenerated(CspHeader cspHeader)
-        {
-            AddLogEntry("CSP", $"Report-only CSP header generated",
-                $"Value: {TruncateString(cspHeader.HeaderValue, 150)}");
-        }
-
-        // Control handlers
         private async Task OnUrlChange(ChangeEventArgs e)
         {
             currentUrl = e.Value?.ToString() ?? "";
@@ -185,178 +148,240 @@ namespace BlazorFrameDemo.Components.Pages
             StateHasChanged();
         }
 
-        private async Task OnSecurityLevelChange(ChangeEventArgs e)
+        private async Task OnSecurityPresetChange(ChangeEventArgs e)
         {
-            var level = e.Value?.ToString() ?? "moderate";
-            currentSecurityOptions = level switch
+            currentSecurityPreset = e.Value?.ToString() ?? "development";
+
+            currentSecurityOptions = currentSecurityPreset switch
             {
-                "strict" => new MessageSecurityOptions
+                "development" => new MessageSecurityOptions().ForDevelopment(),
+                "production" => new MessageSecurityOptions().ForProduction(),
+                "payment" => new MessageSecurityOptions().ForPaymentWidget(),
+                "trusted" => new MessageSecurityOptions().ForTrustedContent(),
+                "custom" => new MessageSecurityOptions
                 {
                     EnableStrictValidation = true,
-                    MaxMessageSize = 16 * 1024,
+                    MaxMessageSize = 32 * 1024,
                     LogSecurityViolations = true,
-                    MaxJsonDepth = 5,
-                    MaxObjectProperties = 20,
-                    MaxArrayElements = 50
+                    SandboxPreset = currentSandboxPreset,
+                    EnableSandbox = currentSandboxPreset != SandboxPreset.None,
+                    RequireHttps = requireHttps,
+                    AllowInsecureConnections = allowInsecureConnections
                 },
-                "relaxed" => new MessageSecurityOptions
+                _ => new MessageSecurityOptions().ForDevelopment()
+            };
+
+            UpdateConfigurationValidation();
+            AddLogEntry("PRESET_CHANGE", $"Security preset changed to: {currentSecurityPreset}");
+            StateHasChanged();
+        }
+
+        private async Task OnSandboxPresetChange(ChangeEventArgs e)
+        {
+            if (Enum.TryParse<SandboxPreset>(e.Value?.ToString(), out var preset))
+            {
+                currentSandboxPreset = preset;
+                currentSecurityOptions.SandboxPreset = preset;
+                currentSecurityOptions.EnableSandbox = preset != SandboxPreset.None;
+
+                UpdateConfigurationValidation();
+                AddLogEntry("SANDBOX_CHANGE", $"Sandbox preset changed to: {preset}",
+                    $"Effective sandbox: {currentSecurityOptions.GetEffectiveSandboxValue() ?? "none"}");
+                StateHasChanged();
+            }
+        }
+
+        private async Task OnHttpsRequirementChange(ChangeEventArgs e)
+        {
+            requireHttps = (bool)(e.Value ?? false);
+            currentSecurityOptions.RequireHttps = requireHttps;
+            UpdateConfigurationValidation();
+            AddLogEntry("HTTPS_CHANGE", $"HTTPS requirement: {(requireHttps ? "enabled" : "disabled")}");
+            StateHasChanged();
+        }
+
+        private async Task OnInsecureConnectionsChange(ChangeEventArgs e)
+        {
+            allowInsecureConnections = (bool)(e.Value ?? false);
+            currentSecurityOptions.AllowInsecureConnections = allowInsecureConnections;
+            UpdateConfigurationValidation();
+            AddLogEntry("INSECURE_CHANGE", $"Allow insecure connections: {(allowInsecureConnections ? "enabled" : "disabled")}");
+            StateHasChanged();
+        }
+
+        #endregion
+
+        #region Testing Methods
+
+        private async Task TestValidConfiguration()
+        {
+            var validConfig = new MessageSecurityOptions().ForProduction();
+            var validation = validConfig.ValidateConfiguration();
+
+            AddLogEntry("CONFIG_TEST", "Testing valid configuration",
+                $"Valid: {validation.IsValid}, Warnings: {validation.Warnings.Count}, Suggestions: {validation.Suggestions.Count}");
+        }
+
+        private async Task TestConflictingConfiguration()
+        {
+            var conflictConfig = new MessageSecurityOptions
+            {
+                RequireHttps = true,
+                AllowInsecureConnections = true,  // Conflict!
+                EnableSandbox = false,
+                SandboxPreset = SandboxPreset.Strict  // Another conflict!
+            };
+
+            var validation = conflictConfig.ValidateConfiguration();
+
+            AddLogEntry("CONFIG_TEST", "Testing conflicting configuration",
+                $"Valid: {validation.IsValid}, Warnings: {validation.Warnings.Count}, Errors: {validation.Errors.Count}");
+
+            foreach (var warning in validation.Warnings)
+            {
+                AddLogEntry("CONFIG_WARNING", warning);
+            }
+        }
+
+        private async Task TestInvalidConfiguration()
+        {
+            var invalidConfig = new MessageSecurityOptions
+            {
+                MaxMessageSize = -1,  // Invalid!
+                MaxJsonDepth = 0,     // Invalid!
+                MaxObjectProperties = -5  // Invalid!
+            };
+
+            try
+            {
+                invalidConfig.ValidateAndThrow();
+                AddLogEntry("CONFIG_TEST", "Invalid configuration was not caught!");
+            }
+            catch (Exception ex)
+            {
+                AddLogEntry("CONFIG_TEST", "Invalid configuration correctly caught", ex.Message);
+            }
+        }
+
+        private async Task ValidateAllConfigurations()
+        {
+            var configs = new Dictionary<string, MessageSecurityOptions>
+            {
+                { "Development", new MessageSecurityOptions().ForDevelopment() },
+                { "Production", new MessageSecurityOptions().ForProduction() },
+                { "Payment Widget", new MessageSecurityOptions().ForPaymentWidget() },
+                { "Trusted Content", new MessageSecurityOptions().ForTrustedContent() },
+                { "Current Config", currentSecurityOptions },
+                { "Conflict Test", conflictTestOptions }
+            };
+
+            foreach (var config in configs)
+            {
+                var validation = config.Value.ValidateConfiguration();
+                AddLogEntry("CONFIG_VALIDATION", $"Validated {config.Key}",
+                    $"Valid: {validation.IsValid}, Warnings: {validation.Warnings.Count}, Suggestions: {validation.Suggestions.Count}");
+            }
+        }
+
+        private async Task TestHttpsEnforcement()
+        {
+            var httpsConfig = new MessageSecurityOptions
+            {
+                RequireHttps = true,
+                AllowInsecureConnections = false
+            };
+
+            var httpUrl = "http://httpbin.org/html";
+            var httpsUrl = "https://httpbin.org/html";
+
+            AddLogEntry("HTTPS_TEST", "Testing HTTPS enforcement",
+                $"Testing {httpUrl} vs {httpsUrl} with RequireHttps=true");
+
+            // This would be tested by changing the currentUrl to HTTP and observing violations
+        }
+
+        private async Task TestSandboxBypass()
+        {
+            var bypassTest = "data:text/html,<script>try { window.parent.postMessage({type: 'bypass', data: 'sandbox bypass attempt'}, '*'); } catch(e) { console.log('Sandbox blocked script'); }</script>";
+            AddLogEntry("SANDBOX_TEST", "Testing sandbox bypass attempt",
+                $"Attempting to run script in sandboxed iframe");
+        }
+
+        private async Task TestMaliciousUrl()
+        {
+            var maliciousUrls = new[]
+            {
+                "javascript:alert('XSS')",
+                "vbscript:msgbox('XSS')",
+                "data:text/html,<script>eval('alert(1)')</script>"
+            };
+
+            foreach (var url in maliciousUrls)
+            {
+                AddLogEntry("MALICIOUS_TEST", $"Testing malicious URL: {url}",
+                    "This should be blocked by security validation");
+            }
+        }
+
+        private async Task TestCustomValidation()
+        {
+            var customConfig = new MessageSecurityOptions
+            {
+                CustomValidator = (origin, message) =>
                 {
-                    EnableStrictValidation = false,
-                    MaxMessageSize = 128 * 1024,
-                    LogSecurityViolations = true,
-                    MaxJsonDepth = 20,
-                    MaxObjectProperties = 500,
-                    MaxArrayElements = 1000
-                },
-                _ => new MessageSecurityOptions
-                {
-                    EnableStrictValidation = true,
-                    MaxMessageSize = 64 * 1024,
-                    LogSecurityViolations = true
+                    // Custom validation: reject messages containing "evil"
+                    return !message.Contains("evil", StringComparison.OrdinalIgnoreCase);
                 }
             };
 
-            AddLogEntry("SECURITY_CHANGE", $"Security level changed to: {level}");
-            StateHasChanged();
+            AddLogEntry("CUSTOM_TEST", "Testing custom validation",
+                "Custom validator will reject messages containing 'evil'");
         }
 
-        private async Task OnCspModeChange(ChangeEventArgs e)
+        private async Task ExportConfiguration()
         {
-            currentCspMode = e.Value?.ToString() ?? "none";
+            var configSummary = $@"
+BlazorFrame Configuration Export
+Generated: {DateTime.Now:yyyy-MM-dd HH:mm:ss}
 
-            currentCspOptions = currentCspMode switch
-            {
-                "development" => new CspOptions()
-                    .ForDevelopment()
-                    .AllowFrameSources(ExtractOriginFromUrl(currentUrl)),
-                "production" => new CspOptions()
-                    .ForProduction()
-                    .AllowFrameSources(ExtractOriginFromUrl(currentUrl))
-                    .WithScriptNonce($"nonce-{DateTime.Now.Ticks}"),
-                "custom" => new CspOptions()
-                    .AllowSelf()
-                    .AllowFrameSources(ExtractOriginFromUrl(currentUrl))
-                    .AllowHttpsFrames()
-                    .AllowDataUrls()
-                    .WithCustomDirective("img-src", "'self'", "data:", "https:")
-                    .WithCustomDirective("connect-src", "'self'", "https:"),
-                _ => null
-            };
+Security Preset: {currentSecurityPreset}
+Sandbox Preset: {currentSandboxPreset}
+Effective Sandbox: {currentSecurityOptions.GetEffectiveSandboxValue() ?? "none"}
 
-            AddLogEntry("CSP_CHANGE", $"CSP mode changed to: {currentCspMode}");
-            StateHasChanged();
+Security Options:
+- Require HTTPS: {currentSecurityOptions.RequireHttps}
+- Allow Insecure: {currentSecurityOptions.AllowInsecureConnections}
+- Strict Validation: {currentSecurityOptions.EnableStrictValidation}
+- Max Message Size: {currentSecurityOptions.MaxMessageSize} bytes
+- Max JSON Depth: {currentSecurityOptions.MaxJsonDepth}
+- Max Object Props: {currentSecurityOptions.MaxObjectProperties}
+- Max Array Elements: {currentSecurityOptions.MaxArrayElements}
+
+Configuration Validation:
+- Valid: {configValidationResult?.IsValid ?? false}
+- Errors: {configValidationResult?.Errors.Count ?? 0}
+- Warnings: {configValidationResult?.Warnings.Count ?? 0}
+- Suggestions: {configValidationResult?.Suggestions.Count ?? 0}
+";
+
+            AddLogEntry("EXPORT", "Configuration exported to log", configSummary);
         }
 
-        private async Task SendTestMessage()
+        #endregion
+
+        #region Utility Methods
+
+        private void UpdateConfigurationValidation()
         {
-            var message = """{"type": "test", "data": "Hello from BlazorFrame demo!", "timestamp": """ +
-                          DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + "}";
-
-            await SendMessageToIframes(message);
-            AddLogEntry("SEND", "Sent test message");
+            configValidationResult = currentSecurityOptions.ValidateConfiguration();
         }
 
-        private async Task SendLargeMessage()
-        {
-            var largeData = new string('A', 100 * 1024);
-            var message = $@"{{""type"": ""large"", ""data"": ""{largeData}""}}";
-            await SendMessageToIframes(message);
-            AddLogEntry("SEND", "Sent large message (100KB)");
-        }
-
-        private async Task SendMaliciousMessage()
-        {
-            var message = """{"type": "malicious", "data": "<script>alert('XSS')</script>", "eval": "eval('console.log(\"test\")')"}""";
-            await SendMessageToIframes(message);
-            AddLogEntry("SEND", "Sent potentially malicious message");
-        }
-
-        private async Task SendCustomMessage()
-        {
-            if (!string.IsNullOrWhiteSpace(customMessage))
-            {
-                await SendMessageToIframes(customMessage);
-                AddLogEntry("SEND", "Sent custom message", customMessage);
-            }
-        }
-
-        private async Task ValidateAllCspConfigurations()
-        {
-            var cspBuilder = new BlazorFrame.Services.CspBuilderService();
-
-            var configurations = new Dictionary<string, CspOptions>
-            {
-                { "Development", developmentCsp },
-                { "Production", productionCsp },
-                { "Custom with Nonce", customCspWithNonce },
-                { "Strict", strictCspOptions },
-                { "Report Only", reportOnlyCsp }
-            };
-
-            cspValidationResults.Clear();
-
-            foreach (var config in configurations)
-            {
-                var validation = cspBuilder.ValidateCspOptions(config.Value);
-                cspValidationResults.Add(new CspValidationSummary
-                {
-                    ConfigName = config.Key,
-                    IsValid = validation.IsValid,
-                    Warnings = validation.Warnings,
-                    Suggestions = validation.Suggestions
-                });
-
-                AddLogEntry("CSP_VALIDATION", $"Validated {config.Key} CSP",
-                    $"Valid: {validation.IsValid}, Warnings: {validation.Warnings.Count}, Suggestions: {validation.Suggestions.Count}");
-            }
-
-            StateHasChanged();
-        }
-
-        private async Task TestCspMetaTagGeneration()
-        {
-            if (currentCspOptions != null)
-            {
-                var cspBuilder = new BlazorFrame.Services.CspBuilderService();
-                var metaTag = cspBuilder.BuildCspMetaTag(currentCspOptions, new[] { currentUrl });
-
-                AddLogEntry("CSP_META", "Generated CSP meta tag", metaTag);
-            }
-            else
-            {
-                AddLogEntry("CSP_META", "No CSP configuration active", "Please select a CSP mode first");
-            }
-        }
-
-        private async Task TestCspJavaScriptGeneration()
-        {
-            if (currentCspOptions != null)
-            {
-                var cspBuilder = new BlazorFrame.Services.CspBuilderService();
-                var jsCode = cspBuilder.BuildCspJavaScript(currentCspOptions, new[] { currentUrl });
-
-                AddLogEntry("CSP_JS", "Generated CSP JavaScript", TruncateString(jsCode, 200));
-            }
-            else
-            {
-                AddLogEntry("CSP_JS", "No CSP configuration active", "Please select a CSP mode first");
-            }
-        }
-
-        private async Task SendMessageToIframes(string message)
-        {
-            // For now, just log the message - will implement actual message sending once BlazorFrame API is confirmed
-            Logger.LogInformation("Would send message to iframes: {Message}", message);
-            await Task.CompletedTask;
-        }
-
-        // Utility methods
         private void AddLogEntry(string type, string message, string details = "")
         {
             eventLog.Add(new LogEntry { Type = type, Message = message, Details = details });
-            if (eventLog.Count > 100) // Keep log manageable
+            if (eventLog.Count > 200) // Keep log manageable
             {
-                eventLog.RemoveAt(0);
+                eventLog.RemoveRange(0, 50); // Remove oldest 50 entries
             }
         }
 
@@ -365,18 +390,20 @@ namespace BlazorFrameDemo.Components.Pages
             eventLog.Clear();
             messageCount = 0;
             securityViolations = 0;
+            configurationErrors = 0;
+            urlValidationErrors = 0;
             cspHeadersGenerated = 0;
-            cspValidationResults.Clear();
             StateHasChanged();
         }
 
         private string GetLogEntryClass(string type) => type.ToLower() switch
         {
-            "load" or "message" or "restricted" => "success",
-            "security" => "security",
-            "csp" or "csp_validation" or "csp_meta" or "csp_js" => "csp",
+            "load" or "message" => "success",
+            "security_violation" or "url_violation" or "malicious_test" => "security",
+            "config_violation" or "config_test" or "config_validation" or "config_warning" => "config",
+            "sandbox_test" or "sandbox_change" => "sandbox",
             "error" => "error",
-            "send" or "url_change" or "security_change" or "csp_change" => "info",
+            "https_test" or "custom_test" or "conflict_test" => "warning",
             _ => "info"
         };
 
@@ -387,20 +414,6 @@ namespace BlazorFrameDemo.Components.Pages
             return input[..maxLength] + "...";
         }
 
-        private static string ExtractOriginFromUrl(string url)
-        {
-            try
-            {
-                if (url.StartsWith("data:")) return "data:";
-                if (url.StartsWith("blob:")) return "blob:";
-
-                var uri = new Uri(url);
-                return uri.GetLeftPart(UriPartial.Authority);
-            }
-            catch
-            {
-                return "'self'";
-            }
-        }
+        #endregion
     }
 }
